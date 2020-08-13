@@ -63,6 +63,8 @@ def main(args):
     if hasattr(envs, 'close'):
         envs.close()
 
+    return logs
+
 
 def meta_eval(args, envs, agent, ilp, logs):
     assert not args.train

@@ -1,20 +1,53 @@
 import os, time, csv, copy
-from mtsgi.graph.graph_utils import dotdict
-from tensorboardX import SummaryWriter
+
 import numpy as np
+import tensorflow as tf
+
+from tensorboard.summary.writer.event_file_writer import EventFileWriter
+from tensorboard.compat.proto import event_pb2
+from tensorboard.compat.proto.summary_pb2 import Summary
+
+from mtsgi.graph.graph_utils import dotdict
+
+
+class SummaryWriter:
+
+    def __init__(self, log_dir):
+        self._log_dir = log_dir
+        self._event_writer = EventFileWriter(self._log_dir)
+
+    @property
+    def log_dir(self):
+        return self._log_dir
+
+    def add_summary(self, summary, global_step=None, walltime=None):
+        event = event_pb2.Event(summary=summary)
+        event.step = int(global_step)
+        event.wall_time = time.time() if walltime is None else walltime
+        self._event_writer.add_event(event)
+
+    def add_scalar(self, tag, scalar_value, global_step=None, walltime=None):
+        summary_pb = Summary(value=[Summary.Value(
+            tag=tag, simple_value=float(scalar_value))])
+        self.add_summary(summary_pb, global_step=global_step, walltime=walltime)
+        return summary_pb
+
+    def __del__(self):
+        self._event_writer.close()
+
 
 
 def _update_print_log(args, logs, it, num_updates, start, Score_tr, Score_tst, succ_tr, succ_tst, rollouts):
     #1.
-    s_tr    = Score_tr.cpu().mean().item()
-    if type(Score_tst)==int:
+    s_tr = Score_tr.numpy().mean().item()
+    if isinstance(Score_tr, int):
         s_tst = Score_tst
     else:
-        s_tst   = Score_tst.cpu().mean().item()
-    Val     = rollouts.value_preds[0].cpu().mean().item()
-    Return  = rollouts.rewards.cpu().sum(0).mean().item()
-    #print('ret=', Return, 'rsum=',rollouts.rewards.cpu().sum(0).mean().item())
-    total_inter = succ_tr*args.num_processes*args.tr_epi
+        s_tst   = Score_tst.numpy().mean().item()
+    Val     = rollouts.value_preds[0].numpy().mean().item()
+    Return  = rollouts.rewards.numpy().sum(0).mean().item()
+    #print('ret=', Return, 'rsum=',rollouts.rewards.numpy().sum(0).mean().item())
+    total_inter = succ_tr * args.num_processes * args.tr_epi
 
     #2. update windows
     _update_window(logs.window.str, s_tr)
@@ -59,6 +92,7 @@ def tensorboard_eval(args, logs, it, ep_logs=None, g_ind=None, value_loss=None, 
     if args.save:
         if args.writer is None:
             args.writer = SummaryWriter(log_dir=args.run_path)
+            print("Writing summaries to:", args.writer.log_dir)
 
         if args.mode == 'meta_eval':
             # cum_ep : current episode * num_graph --> cumulative episode
@@ -91,6 +125,7 @@ def _save_log(args, logs, agent, value_loss, action_loss, dist_entropy):
         if n_iter % args.summary_interval==0 and n_iter>1:
             if args.writer is None:
                 args.writer = SummaryWriter(log_dir=args.run_path)
+                print("Writing summaries to:", args.writer.log_dir)
             _write_summary(logs, args.writer, agent, value_loss, action_loss, dist_entropy)
 
         #2. write csv
@@ -111,9 +146,9 @@ def _save_log(args, logs, agent, value_loss, action_loss, dist_entropy):
             except OSError:
                 pass
             # A really ugly way to save a model to CPU
-            save_model = agent.actor_critic
-            if args.cuda:
-                save_model = copy.deepcopy(agent.actor_critic).cpu()
+            #save_model = agent.actor_critic
+            #if args.cuda:
+            #    save_model = np.array(agent.actor_critic).numpy()
             #torch.save(save_model, os.path.join(save_path, args.env_name + '_' + str(logs.iter) + ".pt"))
             raise NotImplementedError("Need to use other checkpointing mechanism.")
 
@@ -121,15 +156,16 @@ def _save_eval_log(args, logs, tot_it, value_loss=None, action_loss=None, dist_e
     if args.save:
         if args.writer is None:
             writer = SummaryWriter(log_dir=args.run_path)
+            print("Writing summaries to:", args.writer.log_dir)
         else:
             writer = args.writer
 
-        if args.mode=='meta_eval':
-            s_tr    = logs.str/tot_it
-            s_tst   = logs.stst/tot_it
-            s_tst   = logs.stst/tot_it
-            ret     = logs.ret/tot_it
-            succ_rate = logs.succ_rate_tst/tot_it
+        if args.mode == 'meta_eval':
+            s_tr = logs.str / tot_it
+            s_tst = logs.stst / tot_it
+            s_tst = logs.stst / tot_it
+            ret = logs.ret / tot_it
+            succ_rate = logs.succ_rate_tst / tot_it
             data = np.stack([np.arange(1,args.tr_epi+1), s_tr, s_tst, ret, succ_rate])
             for n_iter in range(0, args.num_updates, args.summary_interval):
                 writer.add_scalar('performance/final_score_train', s_tr[-1], n_iter)
@@ -185,21 +221,21 @@ def prepare_logging(args):
         args.folder_name = 'Thor_' + args.folder_name
 
     if args.method=='SGI' and args.algo in ['a2c', 'ppo']: # SGI-meta / SGI-meta-eval
-        if args.bonus_mode==0:
+        if args.bonus_mode == 0:
             args.suffix = '_ext_'
-        elif args.bonus_mode==1:
+        elif args.bonus_mode == 1:
             args.suffix = '_uniform_'
-        elif args.bonus_mode==2:
+        elif args.bonus_mode == 2:
             args.suffix = '_UCB_'
         else:
-            assert(False)
+            assert (False)
     else:
         args.suffix = '_'
 
     config = 'tr_epi-{}_test_epi-{}_lr-{}_'.format(args.tr_epi, args.test_epi, args.lr)
     args.suffix += config
 
-    if args.mode =='meta_eval':
+    if args.mode == 'meta_eval':
         args.folder_name += 'eval_'
     args.folder_name += args.algo + '_env-{}'.format(args.env_name) + args.suffix + 'exp_id-'+str(args.exp_id) + '_seed-'+str(args.seed)
 
