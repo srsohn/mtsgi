@@ -8,6 +8,8 @@ from mtsgi import envs
 
 
 class MazeWrapper(dm_env.Environment):
+  # TODO: Unify with MazeOptionEnv (or making it gym-compatible)
+
   def __init__(self, environment: envs.MazeEnv):
     self._environment = environment
     self._reset_next_step = True
@@ -34,10 +36,10 @@ class MazeWrapper(dm_env.Environment):
     unique_elements, counts = np.unique(self.index_to_pool, return_counts=True)
     assert np.all(counts == 1), 'Error! self.index_to_pool should be unique'
 
-  def reset_task(self, task_index: Optional[int] = None):
+  def reset_task(self, task_index: Optional[int] = None, **kwargs):
     """Sample/reset a task for meta-learning and multi-task learning."""
     self._assertions()
-    return self._environment.reset_task(task_index=task_index)
+    return self._environment.reset_task(task_index=task_index, **kwargs)
 
   def load_debugging_map(self, filename: str):
     self._environment.load_debugging_map(filename)
@@ -61,7 +63,7 @@ class MazeWrapper(dm_env.Environment):
       return self.reset()
 
     # Take an environment step.
-    observation, reward, done = self._environment.step(action)
+    observation, reward, done, _ = self._environment.step(action)
     self._reset_next_step = done
 
     if done:
@@ -76,6 +78,9 @@ class MazeWrapper(dm_env.Environment):
 
   def reward_spec(self) -> types.NestedSpec:
     return self._environment.reward_spec()
+
+  def discount_spec(self):
+    return self._environment.discount_spec()
 
   @property
   def task(self):

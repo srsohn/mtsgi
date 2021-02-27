@@ -1,5 +1,6 @@
 from enum import Enum, unique
 from .utils import AGENT, BLOCK, WATER, EMPTY, TYPE_PICKUP, TYPE_TRANSFORM, KEY, MOVE_ACTS, OID_TO_IID
+from .maze_config import MazeConfig
 
 @unique
 class Object(Enum):
@@ -17,7 +18,7 @@ class Object(Enum):
   JEWELER = 11
   LUMBERSHOP = 12
 
-class Mining(object):
+class Mining(MazeConfig):
     def __init__(self):
         # map
         self.env_id = 'mining'

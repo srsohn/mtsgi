@@ -1,4 +1,4 @@
 # Expose environment and subtask graph.
 from .mazeenv import MazeEnv
 from .mazemap import Mazemap
-from .graph import SubtaskGraph
+from . import graph

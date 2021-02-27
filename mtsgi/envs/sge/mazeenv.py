@@ -8,10 +8,13 @@ from acme import types, specs
 
 from mtsgi.envs import sge
 from mtsgi.utils.graph_utils import SubtaskGraph
-from .utils import get_id_from_ind_multihot, TimeProfiler, AGENT
+from mtsgi.envs.sge.utils import get_id_from_ind_multihot, TimeProfiler, AGENT
 
 
 def _get_game_length(game_name, graph_param):
+  if graph_param is None:
+    return 70              # XXX generation mode
+
   if game_name == 'playground':
     if graph_param[:2] == 'D1':
       return 60
@@ -26,13 +29,27 @@ def _get_game_length(game_name, graph_param):
   else:
     assert False
 
+
+class IneligibleSubtaskError(Exception):
+  pass
+
 #################
 # Note: There are few differences from msgi repo.
 # 1. episode length is shorter in mining
 # 2. In msgi, #blocks=0, always. In here, #blocks (and #waters) are non-zero.
 # 3. In msgi, #objects == #relevant subtasks. In here, there may be extra objects (e.g., tree in mining)
 class MazeEnv:  # single batch
-  def __init__(self, rank, game_name, graph_param, gamma, seed=1, render=False, verbose_level=0):
+  def __init__(self, *, game_name, graph_param: str,
+               rank=0, gamma=0.99, seed=1, render=False, verbose_level=0,
+               generate_graphs=False,
+               ):
+    '''
+    Args:
+      game_name: 'playground' or 'mining.'
+      graph_param: Difficulty of subtask graph. e.g. 'train', 'eval' for mining,
+        'D1_train', etc. for playground.
+      generate_graphs:
+    '''
     if game_name == 'playground':
       from .playground import Playground
       game_config = Playground()
@@ -51,16 +68,24 @@ class MazeEnv:  # single batch
     self._game_name = game_name
 
     self.config = game_config
-    self.max_task = self.config.nb_subtask_type
     self.subtask_pool = self.config.subtasks
     self._default_game_len = _get_game_length(game_name, graph_param)
     self._rank = rank
     self._verbose_level = verbose_level
 
     # graph & map
-    self.graph = sge.SubtaskGraph(
-        graph_folder, filename, self.max_task)  # just load all graph
-    self.map = sge.Mazemap(rank=rank, game_name=game_name, game_config=game_config, render=render)
+    if not generate_graphs:
+      # just load all graph from pregenerated envs
+      self.graph = sge.graph.SubtaskGraphCache(
+          graph_folder, filename, self.config.nb_subtask_type)
+    else:
+      # generate on the fly
+      self.graph = sge.graph.SubtaskGraphGenerator(
+        game_config=game_config, env_name=game_name,
+      )
+
+    self.map = sge.Mazemap(rank=rank, game_name=game_name,
+                           game_config=game_config, render=render)
     self.gamma = gamma
     self.count = 0
 
@@ -69,7 +94,7 @@ class MazeEnv:  # single batch
     self.tpf = TimeProfiler('Environment/')
 
     # Store for observation specs.
-    self.reset_task(task_index=1)  # dummy task
+    self.reset_task(task_index=None)  # dummy random task
     observation, _ = self.reset()
     self._observation_specs = {
         k: specs.Array(shape=v.shape, dtype=v.dtype, name=k) \
@@ -77,18 +102,20 @@ class MazeEnv:  # single batch
     }
 
   @property
+  def max_task(self):
+      return self.graph.max_task
+
+  @property
   def environment_id(self) -> str:
     return self._game_name
 
-  def reset_task(self, task_index: Optional[int] = None):
+  def reset_task(self, task_index: Optional[int] = None, **kwargs):
     """Reset the environment task/graph."""
-    if task_index is None:
-      task_index = np.random.permutation(self.graph.num_graph)[0]
-    else:
-      task_index = task_index % self.graph.num_graph
+
+    # Load the task from the suite or generate it on the fly.
+    self.graph.reset_graph(graph_index=task_index, **kwargs)
 
     self.task_index = task_index
-    self.graph.set_graph_index(task_index)
     self.num_subtasks = len(self.graph.subtask_id_list)
     self.subtask_reward = self.graph.subtask_reward
     self.subtask_id_list = self.graph.subtask_id_list
@@ -98,7 +125,6 @@ class MazeEnv:  # single batch
     # Reset map (96% of time)
     self.map.reset(subtask_id_list=self.subtask_id_list, reset_map=True)
     return self.task
-
 
   def set_task(self, task: dict):
     """Set the current environment task/graph to the new task."""
@@ -141,6 +167,7 @@ class MazeEnv:  # single batch
 
   def reset(self):
     # Reset subtask status (1.5%)
+    self._dead = False
     self.executed_sub_ind = -1
     self.mask = np.ones(self.num_subtasks, dtype=np.uint8)
     self.mask_id = np.zeros(self.max_task, dtype=np.uint8)
@@ -163,7 +190,6 @@ class MazeEnv:  # single batch
     self.ret = 0.
     return self._get_state(np.array(False)), self._get_info()
 
-  """ Commented out since it's confusing with OptionMaze's step() func
   def step(self, action):
     if self.graph.graph_index is None:
       raise RuntimeError('Environment has never been reset()')
@@ -180,16 +206,26 @@ class MazeEnv:  # single batch
         #print('Warning! Executed a non-existing subtask')
         pass
     #
-    reward = self._act_subtask(sub_id)
-    self.step_count += 1
-    self.ret += reward * (self.gamma ** self.step_count)
+    try:
+      reward = self._act_subtask(sub_id)
+      self.step_count += 1
+      self.ret += reward * (self.gamma ** self.step_count)
 
-    return self._get_state(), reward, self.is_done(), self._get_info(reward, 1)"""
+      return self._get_state(), reward, self.is_done(), self._get_info(reward, 1)
+    except IneligibleSubtaskError:
+      self._dead = True
+      penalty = -1000   # TODO: Decide what happens on violation
+      return self._get_state(), penalty, self.is_done(), self._get_info(0, 1)
 
   def is_done(self):
+    if self._dead:
+      return True
     time_over = self.step_count >= self.game_length
     game_over = (self.eligibility * self.mask).sum().item() == 0
     return time_over or game_over
+
+  def discount_spec(self):
+    return specs.Array(shape=(), dtype=np.float32, name="discount")
 
   @property
   def state_spec(self):
@@ -206,7 +242,11 @@ class MazeEnv:  # single batch
     ]
 
   @property
-  def action_spec(self):
+  def action_spec(self) -> types.NestedSpec:
+    return specs.Array(shape=len(self.legal_actions), dtype=object)
+
+  @property
+  def legal_actions(self):
     return self.config.legal_actions
 
   # internal
@@ -254,7 +294,8 @@ class MazeEnv:  # single batch
       reward += self.subtask_reward[sub_ind]
       self.executed_sub_ind = sub_ind
     else:
-      assert False, 'The selected subtask is not avilable!'
+      raise IneligibleSubtaskError()
+      #assert False, 'The selected subtask is not avilable!'
     self.mask[sub_ind] = 0
     self.mask_id[sub_id] = 0
 
@@ -301,7 +342,16 @@ class MazeEnv:  # single batch
 
 
 class MazeOptionEnv(MazeEnv):  # single batch. option. single episode
-  def __init__(self, game_name, graph_param, gamma, rank=None, seed=1, render=False, verbose_level=0):
+  # TODO: Do not use inheritance, but implement as wrapper (composition).
+  # It does not make a sense (you are not overriding "env.step")
+  def __init__(self, game_name: str, *, graph_param: str,
+               gamma=0.99, rank=None, seed=1, render=False, verbose_level=0,
+               generate_graphs=False):
+    '''
+    Args:
+      game_name: 'mining' or 'playground'.
+      graph_param: the difficulty of the environment. 'train', 'eval', or 'D1_train', etc.
+    '''
     super().__init__(
       game_name=game_name,
       graph_param=graph_param,
@@ -310,6 +360,7 @@ class MazeOptionEnv(MazeEnv):  # single batch. option. single episode
       seed=seed,
       render=render,
       verbose_level=verbose_level,
+      generate_graphs=generate_graphs,
     )
 
   def step(self, action: np.ndarray):
@@ -344,12 +395,18 @@ class MazeOptionEnv(MazeEnv):  # single batch. option. single episode
     if self._verbose_level > 1:
       print(f'[{self.step_count}/{self.game_length}], pool_id={sub_id}  -> agent=({self.map.agent_x}, {self.map.agent_y}), #steps={option_step} reward={reward:.3f}')
 
-    return self._get_state(option_success), reward, self.is_done()
+    info = None
+    return self._get_state(option_success), reward, self.is_done(), info
 
   def observation_spec(self) -> types.NestedSpec:
     return self._observation_specs
 
+  @property
+  def legal_actions(self):
+    return list(self.graph.index_to_pool)
+
   def action_spec(self) -> types.NestedSpec:
+    # TODO: Decide continuous discrete space (may contain nonexistent subtasks) or not.
     return specs.DiscreteArray(
         num_values=self.max_task,
         dtype=np.int32

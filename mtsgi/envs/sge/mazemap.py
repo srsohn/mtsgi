@@ -79,7 +79,6 @@ class Mazemap:
     oid = -1
     assert action in self.legal_actions, 'Illegal action: '
     if action in {KEY.UP, KEY.DOWN, KEY.LEFT, KEY.RIGHT}:  # move
-      assert False
       new_x = self.agent_x
       new_y = self.agent_y
       if action == KEY.RIGHT:
@@ -105,8 +104,6 @@ class Mazemap:
       if iid > -1:
         oid = iid-3
         self._perform(action, oid)  # perform action in the map
-      else:
-        assert False
 
     self._process_obj()  # moving objects
     return oid

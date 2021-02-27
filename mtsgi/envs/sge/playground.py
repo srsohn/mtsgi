@@ -1,7 +1,8 @@
 from .utils import AGENT, BLOCK, WATER, EMPTY, TYPE_PICKUP, TYPE_TRANSFORM, KEY, MOVE_ACTS, OID_TO_IID
+from .maze_config import MazeConfig
 
 
-class Playground(object):
+class Playground(MazeConfig):
     def __init__(self):
         # map
         self.env_id = 'playground'
