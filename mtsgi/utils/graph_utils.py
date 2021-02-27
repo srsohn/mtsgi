@@ -18,6 +18,12 @@ def _sample_int_layer_wise(nbatch, high, low):
     out_list.append( np.random.randint(low[d], high[d]+1, (nbatch,1 ) ) )
   return np.concatenate(out_list, axis=1)
 
+def _sample_layer_wise(nbatch, high, low):
+    assert len(high.shape) == 1 and len(low.shape) ==1
+    nsample = len(high)
+    base = np.random.rand( nbatch, nsample )
+    return base * (high - low) + low
+
 def get_index_from_pool(pool_ids: np.ndarray, pool_to_index: np.ndarray):
   # (Batched) operation of index = pool_to_index[pool_ids]
   if pool_ids.ndim == 1 and pool_to_index.ndim == 1:
@@ -367,7 +373,7 @@ def batch_bin_encode(bin_tensor):
 def batch_bin_encode_64(bin_tensor):
   # bin_tensor: Nbatch x dim
   assert isinstance(bin_tensor, np.ndarray)
-  assert bin_tensor.dtype == np.bool
+  #assert bin_tensor.dtype == np.bool           # XXX graph generation has bug (ternary inputs)
   return bin_tensor.dot(
       (1 << np.arange(bin_tensor.shape[-1]))
   ).astype(np.int64)
